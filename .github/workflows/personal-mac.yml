@@ -19,7 +19,7 @@ jobs:
           restore-keys: |
             personal-mac-files-
 
-      - name: 2. Start 1-Click Browser Mac GUI (Fixed Port 5901)
+      - name: 2. Start 1-Click Browser Mac GUI (With -rfbnoauth)
         run: |
           mkdir -p ~/Desktop/MyFiles
 
@@ -40,11 +40,11 @@ jobs:
 
           VNC_BIN=$(find "/Applications/Vine Server.app" -name "OSXvnc-server" -type f | head -n 1)
 
-          # 4. Launch OSXvnc-server on port 5901 WITHOUT -localhost or -rfbauth
-          # (Exact flags proven to stay running in your earlier log!)
+          # 4. Launch OSXvnc-server on port 5901 WITH -rfbnoauth
           USER_UID=$(id -u runner)
           sudo launchctl asuser "$USER_UID" "$VNC_BIN" \
             -rfbport 5901 \
+            -rfbnoauth \
             -desktop "Personal-Cloud-Mac" \
             -alwaysshared \
             -dontdisconnect > /Users/runner/osxvnc.log 2>&1 &
@@ -63,7 +63,7 @@ jobs:
           sleep 3
           cat novnc.log || true
 
-          # 6. Start Cloudflare Tunnel using HTTP/2 (Required for stable WebSockets in Firefox!)
+          # 6. Start Cloudflare Tunnel using HTTP/2
           cloudflared tunnel --protocol http2 --url http://127.0.0.1:6080 > cf.log 2>&1 &
 
           for i in {1..25}; do
