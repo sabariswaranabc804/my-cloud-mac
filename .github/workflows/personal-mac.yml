@@ -19,7 +19,7 @@ jobs:
           restore-keys: |
             personal-mac-files-
 
-      - name: 2. Configure macOS Desktop & Start VNC in GUI Session
+      - name: 2. Start macOS GUI Desktop & Browser Tunnel (Click Link Here!)
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
@@ -29,28 +29,24 @@ jobs:
           defaults write com.apple.screensaver idleTime 0
           sudo pmset -a displaysleep 0 sleep 0
 
-          # 2. Ensure Rosetta 2 is installed on Apple Silicon Mac so VineServer runs cleanly
+          # 2. Install Rosetta 2 & cloudflared
           sudo softwareupdate --install-rosetta --agree-to-license || true
+          brew install cloudflared
 
-          # 3. Download and install Vine Server
+          # 3. Download and install Vine Server (OSXvnc)
           curl -sL https://github.com/stweil/OSXvnc/releases/download/V5_3_1/VineServer-5.3.1.dmg -o VineServer.dmg
           hdiutil attach VineServer.dmg -mountpoint /Volumes/VineServer -nobrowse
           sudo cp -R "/Volumes/VineServer/Vine Server.app" /Applications/
           hdiutil detach /Volumes/VineServer
-
-          # 4. Remove Gatekeeper quarantine
           sudo xattr -rd com.apple.quarantine "/Applications/Vine Server.app" || true
 
-          # 5. Automatically find the exact path to OSXvnc-server inside Vine Server.app
           VNC_BIN=$(find "/Applications/Vine Server.app" -name "OSXvnc-server" -type f | head -n 1)
           PASS_BIN=$(find "/Applications/Vine Server.app" -name "storepasswd" -type f | head -n 1)
-          echo "Found VNC Server binary at: $VNC_BIN"
 
-          # 6. Create the VNC password file
+          # 4. Save VNC password & start OSXvnc inside the active GUI session on port 5901
           "$PASS_BIN" "$VNC_PASSWORD" /Users/runner/vncpass
           chmod 600 /Users/runner/vncpass
 
-          # 7. Launch OSXvnc-server inside the active macOS GUI session on port 5901
           USER_UID=$(id -u runner)
           sudo launchctl asuser "$USER_UID" "$VNC_BIN" \
             -rfbport 5901 \
@@ -59,23 +55,15 @@ jobs:
             -alwaysshared \
             -dontdisconnect > /Users/runner/osxvnc.log 2>&1 &
 
-          sleep 5
-          echo "--- OSXvnc Startup Log ---"
-          cat /Users/runner/osxvnc.log || true
-          echo "--- Checking Port 5901 ---"
-          lsof -i :5901
+          sleep 4
+          sudo lsof -i :5901 || true
 
-      - name: 3. Start Firefox Browser GUI Tunnel
-        run: |
-          brew install cloudflared
-
+          # 5. Start noVNC on port 6080 -> connected to VNC port 5901
           git clone --depth 1 https://github.com/novnc/noVNC.git ~/noVNC
           git clone --depth 1 https://github.com/novnc/websockify.git ~/noVNC/utils/websockify
-
-          # Connect noVNC web port (6080) to Vine Server port (5901)
           ~/noVNC/utils/novnc_proxy --vnc localhost:5901 --listen 6080 > novnc.log 2>&1 &
 
-          # Expose port 6080 via Cloudflare HTTPS tunnel
+          # 6. Start Cloudflare HTTPS Tunnel
           cloudflared tunnel --url http://localhost:6080 > cf.log 2>&1 &
 
           for i in {1..25}; do
@@ -90,29 +78,29 @@ jobs:
           echo "🖥️ OPEN THIS LINK IN FIREFOX ON LINUX MINT:"
           echo "👉 ${GUI_URL}/vnc.html?autoconnect=true&resize=scale"
           echo "🔑 Password: (Enter your VNC_PASSWORD secret)"
+          echo "📁 Save permanent files in: Desktop -> MyFiles folder"
+          echo "🛑 To stop early & save files, open Mac Terminal and run: touch ~/stop-mac"
           echo "========================================================================"
 
-      - name: 4. Keep Mac Running (5 Hours 30 Minutes per Cycle)
-        run: |
-          echo "Mac GUI is running! To stop early and save files, open Mac Terminal and run: touch ~/stop-mac"
+          # 7. Keep this step open for 5.5 hours so GitHub doesn't kill the background VNC/tunnel!
           SECONDS_ELAPSED=0
           while [ $SECONDS_ELAPSED -lt 19800 ]; do
             if [ -f ~/stop-mac ]; then
-              echo "Shutdown signal detected! Saving files..."
+              echo "Manual shutdown signal detected! Saving files now..."
               break
             fi
             sleep 15
             SECONDS_ELAPSED=$((SECONDS_ELAPSED + 15))
           done
 
-      - name: 5. Save Your Personal Files for Next Session
+      - name: 3. Save Your Personal Files for Next Session
         if: always()
         uses: actions/cache/save@v4
         with:
           path: ~/Desktop/MyFiles
           key: personal-mac-files-${{ github.run_id }}
 
-      - name: 6. Auto-Spawn Next 6-Hour Mac Session
+      - name: 4. Auto-Spawn Next 6-Hour Mac Session
         if: always() && vars.AUTO_RENEW == 'true'
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
