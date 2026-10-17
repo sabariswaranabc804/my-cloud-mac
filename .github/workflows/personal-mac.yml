@@ -19,9 +19,7 @@ jobs:
           restore-keys: |
             personal-mac-files-
 
-      - name: 2. Start 1-Click Browser Mac GUI (No Install Needed!)
-        env:
-          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+      - name: 2. Start 1-Click Browser Mac GUI (Fixed Port 5901)
         run: |
           mkdir -p ~/Desktop/MyFiles
 
@@ -42,28 +40,31 @@ jobs:
 
           VNC_BIN=$(find "/Applications/Vine Server.app" -name "OSXvnc-server" -type f | head -n 1)
 
-          # 4. Start OSXvnc inside the active GUI session on port 5901 with NO VNC auth bug!
-          # (It only listens locally inside the runner VM; Cloudflare protects the secret URL)
+          # 4. Launch OSXvnc-server on port 5901 WITHOUT -localhost or -rfbauth
+          # (Exact flags proven to stay running in your earlier log!)
           USER_UID=$(id -u runner)
           sudo launchctl asuser "$USER_UID" "$VNC_BIN" \
             -rfbport 5901 \
             -desktop "Personal-Cloud-Mac" \
             -alwaysshared \
-            -dontdisconnect \
-            -localhost > /Users/runner/osxvnc.log 2>&1 &
+            -dontdisconnect > /Users/runner/osxvnc.log 2>&1 &
 
-          sleep 4
+          sleep 5
+          echo "--- OSXvnc Startup Log ---"
           cat /Users/runner/osxvnc.log || true
+          echo "--- Verifying Port 5901 is Listening ---"
+          sudo lsof -i :5901
 
-          # 5. Clone noVNC and create a secret token URL so only YOU can open it
+          # 5. Start noVNC + websockify connected to 127.0.0.1:5901
           git clone --depth 1 https://github.com/novnc/noVNC.git ~/noVNC
           git clone --depth 1 https://github.com/novnc/websockify.git ~/noVNC/utils/websockify
 
-          # Force IPv4 127.0.0.1:5901 so websockify never hits IPv6 localhost errors
           ~/noVNC/utils/novnc_proxy --vnc 127.0.0.1:5901 --listen 6080 > novnc.log 2>&1 &
+          sleep 3
+          cat novnc.log || true
 
-          # 6. Start Cloudflare HTTPS Tunnel
-          cloudflared tunnel --url http://127.0.0.1:6080 > cf.log 2>&1 &
+          # 6. Start Cloudflare Tunnel using HTTP/2 (Required for stable WebSockets in Firefox!)
+          cloudflared tunnel --protocol http2 --url http://127.0.0.1:6080 > cf.log 2>&1 &
 
           for i in {1..25}; do
             GUI_URL=$(grep -o "https://[-a-z0-9.]*\.trycloudflare\.com" cf.log | head -n 1 || true)
@@ -74,9 +75,8 @@ jobs:
           done
 
           echo "========================================================================"
-          echo "🖥️ CLICK THIS LINK IN ANY BROWSER (FIREFOX / CHROME ON LINUX OR WINDOWS):"
+          echo "🖥️ CLICK THIS LINK IN FIREFOX OR CHROME:"
           echo "👉 ${GUI_URL}/vnc.html?autoconnect=true&resize=scale"
-          echo "✅ No password prompt or software install required — opens immediately!"
           echo "📁 Save permanent files in: Desktop -> MyFiles folder"
           echo "========================================================================"
 
