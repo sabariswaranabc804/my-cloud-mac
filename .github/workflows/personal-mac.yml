@@ -1,14 +1,14 @@
 name: Personal Cloud Mac GUI
 
 on:
-  workflow_dispatch: # Start manually with 1 click
+  workflow_dispatch:
   repository_dispatch:
-    types: [renew-mac] # Auto-triggered before the 6-hour timer expires
+    types: [renew-mac]
 
 jobs:
   start-mac-desktop:
-    runs-on: macos-latest # Apple Silicon M-series (3 CPU, 14GB RAM, Free on Public Repo)
-    timeout-minutes: 360  # Maximum 6-hour session per run
+    runs-on: macos-latest
+    timeout-minutes: 360
 
     steps:
       - name: 1. Restore Your Personal Files (From Previous Session)
@@ -23,7 +23,6 @@ jobs:
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
-          # Create your persistent folder on the Desktop
           mkdir -p ~/Desktop/MyFiles
 
           # Set the macOS 'runner' account password to your VNC_PASSWORD
@@ -48,16 +47,22 @@ jobs:
 
       - name: 3. Start Browser GUI Tunnel (Click Link Here!)
         run: |
-          brew install cloudflared novnc
+          brew install cloudflared
 
-          # Connect macOS VNC (5900) to Web Browser Port (6080)
-          /opt/homebrew/opt/novnc/bin/novnc_proxy --vnc localhost:5900 --listen 6080 > novnc.log 2>&1 &
+          git clone --depth 1 https://github.com/novnc/noVNC.git ~/noVNC
+          git clone --depth 1 https://github.com/novnc/websockify.git ~/noVNC/utils/websockify
 
-          # Generate free HTTPS Cloudflare link
+          ~/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6080 > novnc.log 2>&1 &
+
           cloudflared tunnel --url http://localhost:6080 > cf.log 2>&1 &
 
-          sleep 10
-          GUI_URL=$(grep -o "https://[-a-z0-9.]*\.trycloudflare\.com" cf.log | head -n 1)
+          for i in {1..20}; do
+            GUI_URL=$(grep -o "https://[-a-z0-9.]*\.trycloudflare\.com" cf.log | head -n 1 || true)
+            if [ -n "$GUI_URL" ]; then
+              break
+            fi
+            sleep 1
+          done
 
           echo "========================================================================"
           echo "🖥️ YOUR PERSONAL MAC DESKTOP IS READY!"
@@ -71,7 +76,6 @@ jobs:
         run: |
           echo "Your Mac is now live. Do not cancel this step while using the desktop."
           echo "To gracefully shut down and save your files early, run: touch ~/stop-mac"
-          # Loops every 15 seconds for up to 5.5 hours (19800s) or until ~/stop-mac is created
           SECONDS_ELAPSED=0
           while [ $SECONDS_ELAPSED -lt 19800 ]; do
             if [ -f ~/stop-mac ]; then
