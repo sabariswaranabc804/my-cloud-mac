@@ -29,32 +29,40 @@ jobs:
           defaults write com.apple.screensaver idleTime 0
           sudo pmset -a displaysleep 0 sleep 0
 
-          # 2. Download Vine Server (Standard RFB VNC Server compatible with Firefox noVNC)
+          # 2. Ensure Rosetta 2 is installed on Apple Silicon Mac so VineServer runs cleanly
+          sudo softwareupdate --install-rosetta --agree-to-license || true
+
+          # 3. Download and install Vine Server
           curl -sL https://github.com/stweil/OSXvnc/releases/download/V5_3_1/VineServer-5.3.1.dmg -o VineServer.dmg
           hdiutil attach VineServer.dmg -mountpoint /Volumes/VineServer -nobrowse
           sudo cp -R "/Volumes/VineServer/Vine Server.app" /Applications/
           hdiutil detach /Volumes/VineServer
 
-          # 3. Remove macOS Gatekeeper quarantine so it doesn't get blocked
+          # 4. Remove Gatekeeper quarantine
           sudo xattr -rd com.apple.quarantine "/Applications/Vine Server.app" || true
 
-          # 4. Create the VNC password file
-          "/Applications/Vine Server.app/Contents/MacOS/storepasswd" "$VNC_PASSWORD" /Users/runner/vncpass
+          # 5. Automatically find the exact path to OSXvnc-server inside Vine Server.app
+          VNC_BIN=$(find "/Applications/Vine Server.app" -name "OSXvnc-server" -type f | head -n 1)
+          PASS_BIN=$(find "/Applications/Vine Server.app" -name "storepasswd" -type f | head -n 1)
+          echo "Found VNC Server binary at: $VNC_BIN"
+
+          # 6. Create the VNC password file
+          "$PASS_BIN" "$VNC_PASSWORD" /Users/runner/vncpass
           chmod 600 /Users/runner/vncpass
 
-          # 5. Launch OSXvnc-server inside the active macOS GUI session (UID 501) on port 5901
+          # 7. Launch OSXvnc-server inside the active macOS GUI session on port 5901
           USER_UID=$(id -u runner)
-          sudo launchctl asuser "$USER_UID" "/Applications/Vine Server.app/Contents/Resources/OSXvnc-server" \
+          sudo launchctl asuser "$USER_UID" "$VNC_BIN" \
             -rfbport 5901 \
             -rfbauth /Users/runner/vncpass \
             -desktop "Personal-Cloud-Mac" \
             -alwaysshared \
             -dontdisconnect > /Users/runner/osxvnc.log 2>&1 &
 
-          sleep 4
+          sleep 5
           echo "--- OSXvnc Startup Log ---"
-          cat /Users/runner/osxvnc.log
-          # Verify port 5901 is actively listening
+          cat /Users/runner/osxvnc.log || true
+          echo "--- Checking Port 5901 ---"
           lsof -i :5901
 
       - name: 3. Start Firefox Browser GUI Tunnel
