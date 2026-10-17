@@ -19,7 +19,7 @@ jobs:
           restore-keys: |
             personal-mac-files-
 
-      - name: 2. Start macOS GUI Desktop & Browser Tunnel (Click Link Here!)
+      - name: 2. Start macOS GUI & Tunnel (Copy URL from Here!)
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
@@ -29,64 +29,45 @@ jobs:
           defaults write com.apple.screensaver idleTime 0
           sudo pmset -a displaysleep 0 sleep 0
 
-          # 2. Install Rosetta 2 & cloudflared
-          sudo softwareupdate --install-rosetta --agree-to-license || true
+          # 2. Change the macOS 'runner' user password to your VNC_PASSWORD secret
+          sudo sysadminctl -resetPasswordFor runner -newPassword "$VNC_PASSWORD" || \
+          sudo dscl . -passwd /Users/runner "$VNC_PASSWORD"
+
+          # 3. Enable Apple's Built-in Screen Sharing Server (Port 5900)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -allowAccessFor -allUsers -privs -all \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -clientopts -setvncpw -vncpw "$VNC_PASSWORD" \
+            -restart -agent -console
+
+          # 4. Install cloudflared & expose macOS VNC port 5900 directly
           brew install cloudflared
-
-          # 3. Download and install Vine Server (OSXvnc)
-          curl -sL https://github.com/stweil/OSXvnc/releases/download/V5_3_1/VineServer-5.3.1.dmg -o VineServer.dmg
-          hdiutil attach VineServer.dmg -mountpoint /Volumes/VineServer -nobrowse
-          sudo cp -R "/Volumes/VineServer/Vine Server.app" /Applications/
-          hdiutil detach /Volumes/VineServer
-          sudo xattr -rd com.apple.quarantine "/Applications/Vine Server.app" || true
-
-          VNC_BIN=$(find "/Applications/Vine Server.app" -name "OSXvnc-server" -type f | head -n 1)
-          PASS_BIN=$(find "/Applications/Vine Server.app" -name "storepasswd" -type f | head -n 1)
-
-          # 4. Save VNC password & start OSXvnc inside the active GUI session on port 5901
-          "$PASS_BIN" "$VNC_PASSWORD" /Users/runner/vncpass
-          chmod 600 /Users/runner/vncpass
-
-          USER_UID=$(id -u runner)
-          sudo launchctl asuser "$USER_UID" "$VNC_BIN" \
-            -rfbport 5901 \
-            -rfbauth /Users/runner/vncpass \
-            -desktop "Personal-Cloud-Mac" \
-            -alwaysshared \
-            -dontdisconnect > /Users/runner/osxvnc.log 2>&1 &
-
-          sleep 4
-          sudo lsof -i :5901 || true
-
-          # 5. Start noVNC on port 6080 -> connected to VNC port 5901
-          git clone --depth 1 https://github.com/novnc/noVNC.git ~/noVNC
-          git clone --depth 1 https://github.com/novnc/websockify.git ~/noVNC/utils/websockify
-          ~/noVNC/utils/novnc_proxy --vnc localhost:5901 --listen 6080 > novnc.log 2>&1 &
-
-          # 6. Start Cloudflare HTTPS Tunnel
-          cloudflared tunnel --url http://localhost:6080 > cf.log 2>&1 &
+          cloudflared tunnel --url tcp://localhost:5900 > cf.log 2>&1 &
 
           for i in {1..25}; do
-            GUI_URL=$(grep -o "https://[-a-z0-9.]*\.trycloudflare\.com" cf.log | head -n 1 || true)
-            if [ -n "$GUI_URL" ]; then
+            TUNNEL_HOST=$(grep -o "[-a-z0-9.]*\.trycloudflare\.com" cf.log | head -n 1 || true)
+            if [ -n "$TUNNEL_HOST" ]; then
               break
             fi
             sleep 1
           done
 
           echo "========================================================================"
-          echo "🖥️ OPEN THIS LINK IN FIREFOX ON LINUX MINT:"
-          echo "👉 ${GUI_URL}/vnc.html?autoconnect=true&resize=scale"
-          echo "🔑 Password: (Enter your VNC_PASSWORD secret)"
-          echo "📁 Save permanent files in: Desktop -> MyFiles folder"
-          echo "🛑 To stop early & save files, open Mac Terminal and run: touch ~/stop-mac"
+          echo "🖥️ YOUR MAC DESKTOP IS LIVE!"
+          echo "1️⃣ Run this command in your Linux Mint Terminal:"
+          echo "   cloudflared access tcp --hostname ${TUNNEL_HOST} --url localhost:5900"
+          echo ""
+          echo "2️⃣ Open Remmina on Linux Mint, choose VNC, and connect to:"
+          echo "   localhost:5900"
+          echo "   Username: runner"
+          echo "   Password: (Your VNC_PASSWORD secret)"
           echo "========================================================================"
 
-          # 7. Keep this step open for 5.5 hours so GitHub doesn't kill the background VNC/tunnel!
+          # Keep Mac alive for 5.5 hours
           SECONDS_ELAPSED=0
           while [ $SECONDS_ELAPSED -lt 19800 ]; do
             if [ -f ~/stop-mac ]; then
-              echo "Manual shutdown signal detected! Saving files now..."
               break
             fi
             sleep 15
