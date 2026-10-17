@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 1. Restore Your Personal Files (From Previous Session)
+      - name: 1. Restore Your Personal Files
         uses: actions/cache/restore@v4
         with:
           path: ~/Desktop/MyFiles
@@ -19,44 +19,58 @@ jobs:
           restore-keys: |
             personal-mac-files-
 
-      - name: 2. Configure macOS Desktop & Enable Screen Sharing
+      - name: 2. Configure macOS Desktop & Start VNC in GUI Session
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
           mkdir -p ~/Desktop/MyFiles
 
-          # Set the macOS 'runner' account password to your VNC_PASSWORD
-          sudo sysadminctl -resetPasswordFor runner -newPassword "$VNC_PASSWORD" || \
-          sudo dscl . -passwd /Users/runner "$VNC_PASSWORD"
-
-          # Stop macOS from sleeping or locking the screen
+          # 1. Disable sleep and screen lock
           defaults write com.apple.screensaver idleTime 0
           sudo pmset -a displaysleep 0 sleep 0
 
-          # Set legacy VNC password hash in macOS preferences
-          perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA"}; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' <<< "$VNC_PASSWORD" | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
-          sudo chown root:wheel /Library/Preferences/com.apple.VNCSettings.txt
-          sudo chmod 400 /Library/Preferences/com.apple.VNCSettings.txt
+          # 2. Download Vine Server (Standard RFB VNC Server compatible with Firefox noVNC)
+          curl -sL https://github.com/stweil/OSXvnc/releases/download/V5_3_1/VineServer-5.3.1.dmg -o VineServer.dmg
+          hdiutil attach VineServer.dmg -mountpoint /Volumes/VineServer -nobrowse
+          sudo cp -R "/Volumes/VineServer/Vine Server.app" /Applications/
+          hdiutil detach /Volumes/VineServer
 
-          # Turn on macOS VNC Server
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on \
-            -allowAccessFor -allUsers -privs -all \
-            -clientopts -setvnclegacy -vnclegacy yes \
-            -restart -agent -console
+          # 3. Remove macOS Gatekeeper quarantine so it doesn't get blocked
+          sudo xattr -rd com.apple.quarantine "/Applications/Vine Server.app" || true
 
-      - name: 3. Start Browser GUI Tunnel (Click Link Here!)
+          # 4. Create the VNC password file
+          "/Applications/Vine Server.app/Contents/MacOS/storepasswd" "$VNC_PASSWORD" /Users/runner/vncpass
+          chmod 600 /Users/runner/vncpass
+
+          # 5. Launch OSXvnc-server inside the active macOS GUI session (UID 501) on port 5901
+          USER_UID=$(id -u runner)
+          sudo launchctl asuser "$USER_UID" "/Applications/Vine Server.app/Contents/Resources/OSXvnc-server" \
+            -rfbport 5901 \
+            -rfbauth /Users/runner/vncpass \
+            -desktop "Personal-Cloud-Mac" \
+            -alwaysshared \
+            -dontdisconnect > /Users/runner/osxvnc.log 2>&1 &
+
+          sleep 4
+          echo "--- OSXvnc Startup Log ---"
+          cat /Users/runner/osxvnc.log
+          # Verify port 5901 is actively listening
+          lsof -i :5901
+
+      - name: 3. Start Firefox Browser GUI Tunnel
         run: |
           brew install cloudflared
 
           git clone --depth 1 https://github.com/novnc/noVNC.git ~/noVNC
           git clone --depth 1 https://github.com/novnc/websockify.git ~/noVNC/utils/websockify
 
-          ~/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6080 > novnc.log 2>&1 &
+          # Connect noVNC web port (6080) to Vine Server port (5901)
+          ~/noVNC/utils/novnc_proxy --vnc localhost:5901 --listen 6080 > novnc.log 2>&1 &
 
+          # Expose port 6080 via Cloudflare HTTPS tunnel
           cloudflared tunnel --url http://localhost:6080 > cf.log 2>&1 &
 
-          for i in {1..20}; do
+          for i in {1..25}; do
             GUI_URL=$(grep -o "https://[-a-z0-9.]*\.trycloudflare\.com" cf.log | head -n 1 || true)
             if [ -n "$GUI_URL" ]; then
               break
@@ -65,21 +79,18 @@ jobs:
           done
 
           echo "========================================================================"
-          echo "🖥️ YOUR PERSONAL MAC DESKTOP IS READY!"
-          echo "🌐 Open in Chrome/Edge/Brave: ${GUI_URL}/vnc.html?autoconnect=true"
-          echo "👤 macOS Username          : runner"
-          echo "🔑 Password                : (Your VNC_PASSWORD Secret)"
-          echo "📁 Save permanent files in : Desktop -> MyFiles folder"
+          echo "🖥️ OPEN THIS LINK IN FIREFOX ON LINUX MINT:"
+          echo "👉 ${GUI_URL}/vnc.html?autoconnect=true&resize=scale"
+          echo "🔑 Password: (Enter your VNC_PASSWORD secret)"
           echo "========================================================================"
 
       - name: 4. Keep Mac Running (5 Hours 30 Minutes per Cycle)
         run: |
-          echo "Your Mac is now live. Do not cancel this step while using the desktop."
-          echo "To gracefully shut down and save your files early, run: touch ~/stop-mac"
+          echo "Mac GUI is running! To stop early and save files, open Mac Terminal and run: touch ~/stop-mac"
           SECONDS_ELAPSED=0
           while [ $SECONDS_ELAPSED -lt 19800 ]; do
             if [ -f ~/stop-mac ]; then
-              echo "Manual shutdown signal detected! Saving files now..."
+              echo "Shutdown signal detected! Saving files..."
               break
             fi
             sleep 15
@@ -98,7 +109,6 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          echo "Starting fresh 6-hour Mac session automatically..."
           curl -s -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_PAT" \
